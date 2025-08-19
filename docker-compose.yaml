@@ -1,0 +1,12 @@
+services:
+  sweph-service:
+    build: .
+    container_name: sweph-service
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ephemeris:/app/ephemeris
+      - ./natal_charts:/app/natal_charts
+    environment:
+      - EPHEMERIS_PATH=/app/ephemeris
+    restart: unless-stopped
