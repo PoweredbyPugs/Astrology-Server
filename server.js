@@ -3816,6 +3816,35 @@ app.get("/transits/:name/now", (req, res) => {
       };
     });
     
+    // Helper to calculate applying/separating phase
+    function calculatePhase(transitLon, transitSpeed, natalLon, aspectAngle) {
+      // Find the exact aspect points
+      const exactPoint1 = (natalLon + aspectAngle) % 360;
+      const exactPoint2 = (natalLon - aspectAngle + 360) % 360;
+      
+      // Find which exact point we're closer to
+      const dist1 = Math.min(Math.abs(transitLon - exactPoint1), 360 - Math.abs(transitLon - exactPoint1));
+      const dist2 = Math.min(Math.abs(transitLon - exactPoint2), 360 - Math.abs(transitLon - exactPoint2));
+      const exactPoint = dist1 < dist2 ? exactPoint1 : exactPoint2;
+      
+      // Calculate signed distance to exact point
+      let signedDist = exactPoint - transitLon;
+      if (signedDist > 180) signedDist -= 360;
+      if (signedDist < -180) signedDist += 360;
+      
+      // If very close, it's exact
+      if (Math.abs(signedDist) < 0.1) return "exact";
+      
+      // If moving toward exact point = applying, away = separating
+      if ((transitSpeed > 0 && signedDist > 0) || (transitSpeed < 0 && signedDist < 0)) {
+        return "applying";
+      } else {
+        return "separating";
+      }
+    }
+    
+    const aspectAngles = { conjunction: 0, sextile: 60, square: 90, trine: 120, opposition: 180 };
+
     for (const transit of currentPositions) {
       for (const natal of chart.planets) {
         const natalLon = parseFloat(natal.longitude);
@@ -3823,6 +3852,8 @@ app.get("/transits/:name/now", (req, res) => {
         
         if (aspect) {
           if (majorOnly && aspect.nature !== "major") continue;
+          
+          const phase = calculatePhase(transit.longitude, transit.speed, natalLon, aspectAngles[aspect.name] || 0);
           
           transits.push({
             transit: {
@@ -3842,7 +3873,8 @@ app.get("/transits/:name/now", (req, res) => {
             orb: aspect.orb,
             nature: aspect.nature,
             isExact: aspect.isExact,
-            isTight: aspect.isTight
+            isTight: aspect.isTight,
+            phase: phase
           });
         }
       }
@@ -3856,6 +3888,8 @@ app.get("/transits/:name/now", (req, res) => {
       for (const angle of angles) {
         const aspect = findAspect(transit.longitude, angle.longitude, orb);
         if (aspect && aspect.nature === "major") {
+          const phase = calculatePhase(transit.longitude, transit.speed, angle.longitude, aspectAngles[aspect.name] || 0);
+          
           transits.push({
             transit: {
               planet: transit.name,
@@ -3872,7 +3906,8 @@ app.get("/transits/:name/now", (req, res) => {
             symbol: aspect.symbol,
             orb: aspect.orb,
             nature: "angular",
-            isExact: aspect.isExact
+            isExact: aspect.isExact,
+            phase: phase
           });
         }
       }
