@@ -4,14 +4,14 @@
     "description": "A simple HTTP server exposing Swiss Ephemeris calculations with CORS",
     "main": "server.js",
     "scripts": {
-      "start": "node server.js"
+        "start": "node server.js"
     },
     "dependencies": {
-      "express": "^4.18.2",
-      "sweph": "2.10.3-4",
-      "cors": "^2.8.5",
-      "moment-timezone": "^0.5.43",
-      "fs": "0.0.1-security",
-      "path": "^0.12.7"
+        "cors": "^2.8.5",
+        "express": "^4.18.2",
+        "fs": "0.0.1-security",
+        "moment-timezone": "^0.5.43",
+        "path": "^0.12.7",
+        "sweph": "^2.10.3-4"
     }
-  }
+}
