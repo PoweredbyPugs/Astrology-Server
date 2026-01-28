@@ -1662,22 +1662,55 @@ app.get("/daily-transits", (req, res) => {
       const aspect = calculateAspect(currentDegrees, natalDegrees);
       if (!aspect) return null;
 
-      // Calculate yesterday's aspect to determine phase
+      // Calculate yesterday's aspect to get orb change
       const yesterdayAspect = calculateAspect(yesterdayDegrees, natalDegrees);
-      if (!yesterdayAspect || yesterdayAspect.type !== aspect.type) {
-        // If yesterday wasn't the same aspect type, we can't determine phase reliably
-        return { ...aspect, phase: "stable", orbChange: "0.000" };
-      }
-
       const currentOrb = parseFloat(aspect.orb);
-      const yesterdayOrb = parseFloat(yesterdayAspect.orb);
+      const yesterdayOrb = yesterdayAspect ? parseFloat(yesterdayAspect.orb) : currentOrb;
       const orbChange = currentOrb - yesterdayOrb;
 
+      // Determine applying/separating based on POSITION relative to exact aspect
+      // Not just whether orb is shrinking (which fails when aspect perfects mid-day)
+      const aspectAngles = {
+        conjunction: 0,
+        sextile: 60,
+        square: 90,
+        trine: 120,
+        opposition: 180
+      };
+      
+      const aspectAngle = aspectAngles[aspect.type] || 0;
+      
+      // Calculate the exact degree where aspect would be perfect
+      // There are two possible exact points for most aspects
+      let exactPoint1 = (natalDegrees + aspectAngle) % 360;
+      let exactPoint2 = (natalDegrees - aspectAngle + 360) % 360;
+      
+      // Find which exact point we're closer to
+      const dist1 = Math.min(Math.abs(currentDegrees - exactPoint1), 360 - Math.abs(currentDegrees - exactPoint1));
+      const dist2 = Math.min(Math.abs(currentDegrees - exactPoint2), 360 - Math.abs(currentDegrees - exactPoint2));
+      const exactPoint = dist1 < dist2 ? exactPoint1 : exactPoint2;
+      
+      // Calculate direction of transit motion (positive = forward through zodiac)
+      const transitSpeed = currentDegrees - yesterdayDegrees;
+      // Handle wrap-around (if crossed 0°)
+      const normalizedSpeed = transitSpeed > 180 ? transitSpeed - 360 : (transitSpeed < -180 ? transitSpeed + 360 : transitSpeed);
+      
+      // Determine if we're approaching or receding from the exact point
+      // Calculate signed distance to exact point
+      let signedDist = exactPoint - currentDegrees;
+      if (signedDist > 180) signedDist -= 360;
+      if (signedDist < -180) signedDist += 360;
+      
       let phase = "stable";
-      if (orbChange < -0.05) {
-        phase = "applying"; // Orb getting smaller (tighter)
-      } else if (orbChange > 0.05) {
-        phase = "separating"; // Orb getting larger (looser)
+      // If moving toward exact point = applying, moving away = separating
+      if (Math.abs(currentOrb) < 0.05) {
+        phase = "exact";
+      } else if ((normalizedSpeed > 0 && signedDist > 0) || (normalizedSpeed < 0 && signedDist < 0)) {
+        // Moving in same direction as exact point = applying
+        phase = "applying";
+      } else if ((normalizedSpeed > 0 && signedDist < 0) || (normalizedSpeed < 0 && signedDist > 0)) {
+        // Moving away from exact point = separating
+        phase = "separating";
       }
 
       return {
