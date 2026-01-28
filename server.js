@@ -3573,3 +3573,276 @@ app.get("/zr-calc", (req, res) => {
     res.status(500).json({ error: "Failed to calculate Zodiacal Releasing" });
   }
 });
+// ============================================================================
+// TRANSIT TRACKING
+// ============================================================================
+
+/**
+ * Calculate aspects between two positions
+ */
+function findAspect(lon1, lon2, orb = 8) {
+  const aspects = [
+    { name: "conjunction", angle: 0, symbol: "☌", nature: "major" },
+    { name: "sextile", angle: 60, symbol: "⚹", nature: "major" },
+    { name: "square", angle: 90, symbol: "□", nature: "major" },
+    { name: "trine", angle: 120, symbol: "△", nature: "major" },
+    { name: "opposition", angle: 180, symbol: "☍", nature: "major" },
+    { name: "semi-sextile", angle: 30, symbol: "⚺", nature: "minor" },
+    { name: "quincunx", angle: 150, symbol: "⚻", nature: "minor" }
+  ];
+  
+  let diff = Math.abs(lon1 - lon2);
+  if (diff > 180) diff = 360 - diff;
+  
+  for (const aspect of aspects) {
+    const aspectOrb = aspect.nature === "major" ? orb : orb / 2;
+    if (Math.abs(diff - aspect.angle) <= aspectOrb) {
+      const exactOrb = Math.abs(diff - aspect.angle);
+      return {
+        ...aspect,
+        orb: exactOrb.toFixed(2),
+        isExact: exactOrb < 1,
+        isTight: exactOrb < 3
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * GET /transits/:name/now
+ * Get current transits to a stored natal chart
+ */
+app.get("/transits/:name/now", (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const name = req.params.name.toLowerCase().replace(/\s+/g, '_');
+    const filepath = path.join(__dirname, 'natal_charts', `${name}.json`);
+    
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ error: `Chart not found: ${name}` });
+    }
+    
+    const chart = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
+    const majorOnly = req.query.major === 'true';
+    const orb = parseFloat(req.query.orb) || 8;
+    
+    const localNow = moment.tz("America/New_York");
+    const yearUTC = localNow.utc().year();
+    const monthUTC = localNow.utc().month() + 1;
+    const dayUTC = localNow.utc().date();
+    const hourUTC = localNow.utc().hour() + localNow.utc().minute() / 60;
+    
+    const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
+    const flags = sweph.constants.SEFLG_SWIEPH;
+    
+    const transitPlanets = [
+      { name: "Sun", id: sweph.constants.SE_SUN },
+      { name: "Moon", id: sweph.constants.SE_MOON },
+      { name: "Mercury", id: sweph.constants.SE_MERCURY },
+      { name: "Venus", id: sweph.constants.SE_VENUS },
+      { name: "Mars", id: sweph.constants.SE_MARS },
+      { name: "Jupiter", id: sweph.constants.SE_JUPITER },
+      { name: "Saturn", id: sweph.constants.SE_SATURN },
+      { name: "Uranus", id: sweph.constants.SE_URANUS },
+      { name: "Neptune", id: sweph.constants.SE_NEPTUNE },
+      { name: "Pluto", id: sweph.constants.SE_PLUTO }
+    ];
+    
+    const transits = [];
+    
+    const currentPositions = transitPlanets.map(tp => {
+      const result = sweph.calc(jd, tp.id, flags);
+      return {
+        name: tp.name,
+        longitude: result.data[0],
+        speed: result.data[3],
+        sign: getSignFromLongitude(result.data[0]),
+        degree: getDegreeInSign(result.data[0]).toFixed(2),
+        isRetrograde: result.data[3] < 0
+      };
+    });
+    
+    for (const transit of currentPositions) {
+      for (const natal of chart.planets) {
+        const natalLon = parseFloat(natal.longitude);
+        const aspect = findAspect(transit.longitude, natalLon, orb);
+        
+        if (aspect) {
+          if (majorOnly && aspect.nature !== "major") continue;
+          
+          transits.push({
+            transit: {
+              planet: transit.name,
+              sign: transit.sign,
+              degree: transit.degree,
+              isRetrograde: transit.isRetrograde
+            },
+            natal: {
+              planet: natal.name,
+              sign: natal.sign,
+              degree: natal.degreeInSign,
+              house: natal.house
+            },
+            aspect: aspect.name,
+            symbol: aspect.symbol,
+            orb: aspect.orb,
+            nature: aspect.nature,
+            isExact: aspect.isExact,
+            isTight: aspect.isTight
+          });
+        }
+      }
+      
+      // Check transits to angles
+      const angles = [
+        { name: "Ascendant", longitude: parseFloat(chart.angles.ascendant.longitude) },
+        { name: "Midheaven", longitude: parseFloat(chart.angles.midheaven.longitude) }
+      ];
+      
+      for (const angle of angles) {
+        const aspect = findAspect(transit.longitude, angle.longitude, orb);
+        if (aspect && aspect.nature === "major") {
+          transits.push({
+            transit: {
+              planet: transit.name,
+              sign: transit.sign,
+              degree: transit.degree,
+              isRetrograde: transit.isRetrograde
+            },
+            natal: {
+              point: angle.name,
+              sign: getSignFromLongitude(angle.longitude),
+              degree: getDegreeInSign(angle.longitude).toFixed(2)
+            },
+            aspect: aspect.name,
+            symbol: aspect.symbol,
+            orb: aspect.orb,
+            nature: "angular",
+            isExact: aspect.isExact
+          });
+        }
+      }
+    }
+    
+    transits.sort((a, b) => parseFloat(a.orb) - parseFloat(b.orb));
+    
+    // Add profection context
+    const birthDate = moment.tz(
+      chart.birthData.date + " " + chart.birthData.time,
+      chart.birthData.timezone || "America/New_York"
+    );
+    const age = localNow.diff(birthDate, 'years');
+    const profection = calculateProfections(chart.angles.ascendant.sign, age);
+    
+    transits.forEach(t => {
+      if (t.natal.planet === profection.lordOfYear) {
+        t.isToLordOfYear = true;
+      }
+    });
+    
+    res.json({
+      name: chart.meta.name,
+      timestamp: localNow.format(),
+      currentAge: age,
+      profection: {
+        lordOfYear: profection.lordOfYear,
+        activatedHouse: profection.activatedHouse,
+        profectedSign: profection.profectedSign
+      },
+      transitCount: transits.length,
+      transits
+    });
+    
+  } catch (error) {
+    console.error("Error calculating transits:", error);
+    res.status(500).json({ error: "Failed to calculate transits", details: error.message });
+  }
+});
+
+/**
+ * GET /transits/:name/summary
+ * High-level summary of major transits
+ */
+app.get("/transits/:name/summary", (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const name = req.params.name.toLowerCase().replace(/\s+/g, '_');
+    const filepath = path.join(__dirname, 'natal_charts', `${name}.json`);
+    
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ error: `Chart not found: ${name}` });
+    }
+    
+    const chart = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
+    
+    const localNow = moment.tz("America/New_York");
+    const yearUTC = localNow.utc().year();
+    const monthUTC = localNow.utc().month() + 1;
+    const dayUTC = localNow.utc().date();
+    const hourUTC = localNow.utc().hour() + localNow.utc().minute() / 60;
+    
+    const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
+    const flags = sweph.constants.SEFLG_SWIEPH;
+    
+    const outerPlanets = [
+      { name: "Jupiter", id: sweph.constants.SE_JUPITER },
+      { name: "Saturn", id: sweph.constants.SE_SATURN },
+      { name: "Uranus", id: sweph.constants.SE_URANUS },
+      { name: "Neptune", id: sweph.constants.SE_NEPTUNE },
+      { name: "Pluto", id: sweph.constants.SE_PLUTO }
+    ];
+    
+    const majorTransits = [];
+    
+    for (const tp of outerPlanets) {
+      const result = sweph.calc(jd, tp.id, flags);
+      const transitLon = result.data[0];
+      const transitSign = getSignFromLongitude(transitLon);
+      const isRetrograde = result.data[3] < 0;
+      
+      for (const natal of chart.planets) {
+        const natalLon = parseFloat(natal.longitude);
+        const aspect = findAspect(transitLon, natalLon, 5);
+        
+        if (aspect && aspect.nature === "major") {
+          majorTransits.push({
+            transit: tp.name + (isRetrograde ? " ℞" : "") + " in " + transitSign,
+            aspect: aspect.symbol + " " + aspect.name,
+            to: "natal " + natal.name + " in " + natal.sign,
+            orb: aspect.orb + "°",
+            isTight: aspect.isTight
+          });
+        }
+      }
+    }
+    
+    const birthDate = moment.tz(
+      chart.birthData.date + " " + chart.birthData.time,
+      chart.birthData.timezone || "America/New_York"
+    );
+    const age = localNow.diff(birthDate, 'years');
+    const profection = calculateProfections(chart.angles.ascendant.sign, age);
+    
+    const zrSpirit = calculateZRL2(chart.lots.spirit.sign, birthDate, localNow);
+    
+    res.json({
+      name: chart.meta.name,
+      timestamp: localNow.format(),
+      timing: {
+        age: age,
+        profection: profection.lordOfYear + " year (" + profection.profectedSign + " - " + profection.activatedHouse + "H)",
+        zrL1: zrSpirit.activePeriod.sign + " (" + zrSpirit.activePeriod.percentComplete + "% complete)",
+        zrL2: zrSpirit.l2.activePeriod.sign,
+        zrNote: zrSpirit.l2.note
+      },
+      majorTransits: majorTransits
+    });
+    
+  } catch (error) {
+    console.error("Error calculating transit summary:", error);
+    res.status(500).json({ error: "Failed to calculate transit summary" });
+  }
+});
