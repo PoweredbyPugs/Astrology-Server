@@ -3488,6 +3488,56 @@ app.get("/charts", (req, res) => {
 });
 
 /**
+ * PUT /chart/:name
+ * Save or update a natal chart with raw JSON data
+ */
+app.put("/chart/:name", (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const name = req.params.name.toLowerCase().replace(/\s+/g, '_');
+    const chartsDir = path.join(__dirname, 'natal_charts');
+    
+    if (!fs.existsSync(chartsDir)) {
+      fs.mkdirSync(chartsDir, { recursive: true });
+    }
+    
+    const filepath = path.join(chartsDir, `${name}.json`);
+    const chartData = { name, ...req.body };
+    
+    fs.writeFileSync(filepath, JSON.stringify(chartData, null, 2));
+    
+    res.json({ success: true, message: `Chart '${name}' saved`, chart: chartData });
+  } catch (error) {
+    console.error("Error saving chart:", error);
+    res.status(500).json({ error: "Failed to save chart", details: error.message });
+  }
+});
+
+/**
+ * DELETE /chart/:name
+ * Delete a stored natal chart
+ */
+app.delete("/chart/:name", (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const name = req.params.name.toLowerCase().replace(/\s+/g, '_');
+    const filepath = path.join(__dirname, 'natal_charts', `${name}.json`);
+    
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ error: `Chart '${name}' not found` });
+    }
+    
+    fs.unlinkSync(filepath);
+    res.json({ success: true, message: `Chart '${name}' deleted` });
+  } catch (error) {
+    console.error("Error deleting chart:", error);
+    res.status(500).json({ error: "Failed to delete chart", details: error.message });
+  }
+});
+
+/**
  * GET /profections/:name
  * Get current profection for a stored chart
  * Query param: age (optional, calculates from birth date if not provided)
