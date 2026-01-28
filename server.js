@@ -1295,8 +1295,9 @@ app.get("/test", (req, res) => {
 app.get("/api-info", (req, res) => {
   res.json({
     name: "Sweph Astrological API",
-    version: "1.0.0",
+    version: "2.0.0",
     endpoints: [
+      // Core endpoints
       {
         path: "/test",
         description: "Test if server is running"
@@ -1317,6 +1318,74 @@ app.get("/api-info", (req, res) => {
         path: "/weekly-major-phase",
         description: "Get the major moon phase for the current week"
       },
+      // Dignity endpoints
+      {
+        path: "/dignity-score",
+        method: "GET",
+        description: "Calculate essential dignity score for any planet at any position",
+        parameters: "?planet=Mars&sign=Capricorn&degree=15&isDaySect=true"
+      },
+      {
+        path: "/current-dignities",
+        method: "GET",
+        description: "Get dignity scores for all planets at current positions",
+        parameters: "?lat=40.0&lon=-74.0 (optional location for houses)"
+      },
+      // Chart generation endpoints
+      {
+        path: "/generate-chart",
+        method: "POST",
+        description: "Generate a comprehensive natal chart with dignities, sect, depositors, and lots",
+        parameters: "Body: {name, year, month, day, hour, minute, latitude, longitude, timezone, save: true/false}"
+      },
+      {
+        path: "/chart/:name",
+        method: "GET",
+        description: "Retrieve a stored natal chart by name"
+      },
+      {
+        path: "/charts",
+        method: "GET",
+        description: "List all stored natal charts"
+      },
+      // Timing technique endpoints
+      {
+        path: "/profections/:name",
+        method: "GET",
+        description: "Get annual profections for a stored chart",
+        parameters: "?age=39 (optional, calculates from birth date if not provided)"
+      },
+      {
+        path: "/profections-calc",
+        method: "GET",
+        description: "Calculate profections without a stored chart",
+        parameters: "?ascSign=Libra&age=39"
+      },
+      {
+        path: "/zr/:name",
+        method: "GET",
+        description: "Get Zodiacal Releasing L1 and L2 periods for a stored chart",
+        parameters: "?lot=spirit|fortune&date=YYYY-MM-DD (optional)"
+      },
+      {
+        path: "/zr-calc",
+        method: "GET",
+        description: "Calculate Zodiacal Releasing without a stored chart",
+        parameters: "?lotSign=Capricorn&birthDate=1986-05-01&targetDate=2026-01-28"
+      },
+      // Transit endpoints
+      {
+        path: "/transits/:name/now",
+        method: "GET",
+        description: "Get all current transits to a stored natal chart",
+        parameters: "?major=true&orb=8 (optional filters)"
+      },
+      {
+        path: "/transits/:name/summary",
+        method: "GET",
+        description: "Get high-level summary of major outer planet transits with timing context"
+      },
+      // Existing timing endpoints
       {
         path: "/planetary-retrogrades",
         description: "Get current retrograde status of all planets with optional timeframe",
