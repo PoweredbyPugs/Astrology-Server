@@ -3787,7 +3787,7 @@ app.get("/transits/:name/now", (req, res) => {
     const hourUTC = localNow.utc().hour() + localNow.utc().minute() / 60;
     
     const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
-    const flags = sweph.constants.SEFLG_SWIEPH;
+    const flags = sweph.constants.SEFLG_SWIEPH | sweph.constants.SEFLG_SPEED;
     
     const transitPlanets = [
       { name: "Sun", id: sweph.constants.SE_SUN },
@@ -3895,12 +3895,14 @@ app.get("/transits/:name/now", (req, res) => {
               planet: transit.name,
               sign: transit.sign,
               degree: transit.degree,
-              isRetrograde: transit.isRetrograde
+              isRetrograde: transit.isRetrograde,
+              speed: transit.speed // DEBUG
             },
             natal: {
               point: angle.name,
               sign: getSignFromLongitude(angle.longitude),
-              degree: getDegreeInSign(angle.longitude).toFixed(2)
+              degree: getDegreeInSign(angle.longitude).toFixed(2),
+              longitude: angle.longitude // DEBUG
             },
             aspect: aspect.name,
             symbol: aspect.symbol,
