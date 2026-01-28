@@ -1627,7 +1627,7 @@ app.get("/daily-transits", (req, res) => {
 
     planets.forEach(planetName => {
       const planetConstant = sweph.constants[`SE_${planetName.toUpperCase()}`];
-      if (!planetConstant) {
+      if (planetConstant === undefined) {
         console.log(`❌ Planet constant not found for: ${planetName}`);
         return;
       }
