@@ -2207,20 +2207,17 @@ app.get("/void-of-course-moons", (req, res) => {
     let startBoundary, endBoundary;
     
     if (startDate && endDate) {
-      // Use explicit date range if provided
       startBoundary = startDate.startOf('day');
       endBoundary = endDate.endOf('day');
-      console.log(`Using custom date range: ${startBoundary.format('YYYY-MM-DD')} to ${endBoundary.format('YYYY-MM-DD')}`);
     } else {
-      // Calculate based on timeframe
       switch(timeframe) {
         case "day":
           startBoundary = moment(now).startOf('day');
           endBoundary = moment(now).endOf('day');
           break;
         case "week":
-          const currentDay = now.day(); // 0 is Sunday, 1 is Monday, etc.
-          const daysToMonday = currentDay === 0 ? 6 : currentDay - 1; // Days back to Monday
+          const currentDay = now.day();
+          const daysToMonday = currentDay === 0 ? 6 : currentDay - 1;
           startBoundary = moment(now).subtract(daysToMonday, 'days').startOf('day');
           endBoundary = moment(startBoundary).add(6, 'days').endOf('day');
           break;
@@ -2229,138 +2226,152 @@ app.get("/void-of-course-moons", (req, res) => {
           endBoundary = moment(now).endOf('month');
           break;
         default:
-          // Default to week if invalid timeframe
           const defaultDay = now.day();
           const defaultDaysToMonday = defaultDay === 0 ? 6 : defaultDay - 1;
           startBoundary = moment(now).subtract(defaultDaysToMonday, 'days').startOf('day');
           endBoundary = moment(startBoundary).add(6, 'days').endOf('day');
       }
-      
-      console.log(`Finding void of course moons for ${timeframe}: ${startBoundary.format('YYYY-MM-DD')} to ${endBoundary.format('YYYY-MM-DD')}`);
     }
     
-    // Define planets to check against
+    // Traditional planets only (Sun through Saturn) for VOC calculation
     const planets = [
       { id: sweph.constants.SE_SUN, name: "Sun" },
       { id: sweph.constants.SE_MERCURY, name: "Mercury" },
       { id: sweph.constants.SE_VENUS, name: "Venus" },
       { id: sweph.constants.SE_MARS, name: "Mars" },
       { id: sweph.constants.SE_JUPITER, name: "Jupiter" },
-      { id: sweph.constants.SE_SATURN, name: "Saturn" },
-      { id: sweph.constants.SE_URANUS, name: "Uranus" },
-      { id: sweph.constants.SE_NEPTUNE, name: "Neptune" },
-      { id: sweph.constants.SE_PLUTO, name: "Pluto" }
+      { id: sweph.constants.SE_SATURN, name: "Saturn" }
     ];
     
-    // Define major aspects to check for
+    // Standard orbs for Moon aspects (applying only matters for VOC)
     const majorAspects = [
-      { name: "Conjunction", angle: 0, orb: 1 },
-      { name: "Sextile", angle: 60, orb: 1 },
-      { name: "Square", angle: 90, orb: 1 },
-      { name: "Trine", angle: 120, orb: 1 },
-      { name: "Opposition", angle: 180, orb: 1 }
+      { name: "Conjunction", angle: 0, orb: 8 },
+      { name: "Sextile", angle: 60, orb: 6 },
+      { name: "Square", angle: 90, orb: 8 },
+      { name: "Trine", angle: 120, orb: 8 },
+      { name: "Opposition", angle: 180, orb: 8 }
     ];
     
-    // Define zodiac signs
     const signNames = [
       "Aries", "Taurus", "Gemini", "Cancer",
       "Leo", "Virgo", "Libra", "Scorpio", 
       "Sagittarius", "Capricorn", "Aquarius", "Pisces"
     ];
     
-    // We'll check hourly intervals
-    const vocMoons = [];
-    let datePointer = moment(startBoundary);
+    const flags = sweph.constants.SEFLG_SWIEPH;
     
-    // Track moon position and status
-    let lastSign = null;
-    let vocStart = null;
-    let lastAspectTime = null;
+    // Helper: get Julian day from moment
+    function getJD(m) {
+      return sweph.julday(
+        m.utc().year(),
+        m.utc().month() + 1,
+        m.utc().date(),
+        m.utc().hour() + m.utc().minute() / 60 + m.utc().second() / 3600,
+        sweph.constants.SE_GREG_CAL
+      );
+    }
     
-    while (datePointer.isSameOrBefore(endBoundary)) {
-      // Convert to UTC for Swiss Ephemeris calculations
-      const yearUTC = datePointer.utc().year();
-      const monthUTC = datePointer.utc().month() + 1;
-      const dayUTC = datePointer.utc().date();
-      const hourUTC =
-        datePointer.utc().hour() +
-        datePointer.utc().minute() / 60 +
-        datePointer.utc().second() / 3600;
-      
-      // Calculate Julian day
-      const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
-      const flags = sweph.constants.SEFLG_SWIEPH;
-      
-      // Calculate Moon position
-      const moonResult = sweph.calc(jd, sweph.constants.SE_MOON, flags);
-      if (!moonResult || (moonResult.flag !== 0 && moonResult.flag !== 2)) {
-        datePointer.add(1, 'hour');
-        continue;
-      }
-      
-      const moonLon = moonResult.data[0];
-      const signIndex = Math.floor((moonLon % 360) / 30);
-      const currentSign = signNames[signIndex];
-      
-      // If sign changed, record the end of VOC period if one was ongoing
-      if (lastSign && currentSign !== lastSign && vocStart) {
-        vocMoons.push({
-          start: vocStart.format('YYYY-MM-DD HH:mm'),
-          end: datePointer.format('YYYY-MM-DD HH:mm'),
-          previousSign: lastSign,
-          newSign: currentSign,
-          duration: datePointer.diff(vocStart, 'hours', true).toFixed(1) + ' hours'
-        });
-        vocStart = null;
-      }
-      
-      // Check if the moon is making any aspects
-      let hasMajorAspect = false;
-      
-      // Check aspects with all planets
+    // Helper: get Moon position
+    function getMoonPosition(jd) {
+      const result = sweph.calc(jd, sweph.constants.SE_MOON, flags);
+      if (!result || (result.flag !== 0 && result.flag !== 2)) return null;
+      const lon = result.data[0];
+      const signIndex = Math.floor((lon % 360) / 30);
+      return { lon, sign: signNames[signIndex], degreeInSign: lon % 30 };
+    }
+    
+    // Helper: check if Moon is making an applying aspect
+    function checkMoonAspects(jd, moonLon) {
       for (const planet of planets) {
         const planetResult = sweph.calc(jd, planet.id, flags);
-        if (!planetResult || (planetResult.flag !== 0 && planetResult.flag !== 2)) {
-          continue;
-        }
-        
+        if (!planetResult || (planetResult.flag !== 0 && planetResult.flag !== 2)) continue;
         const planetLon = planetResult.data[0];
         
-        // Calculate angle between moon and planet
         let angle = Math.abs(moonLon - planetLon) % 360;
         if (angle > 180) angle = 360 - angle;
         
-        // Check if this angle is a major aspect (within orb)
         for (const aspect of majorAspects) {
           const orb = Math.abs(angle - aspect.angle);
           if (orb <= aspect.orb) {
-            hasMajorAspect = true;
-            lastAspectTime = datePointer.clone();
-            break;
+            // Check if applying (Moon moving toward exact aspect)
+            // Moon is faster, so if Moon lon < exact aspect point, it's applying
+            const exactPoint = (planetLon + aspect.angle) % 360;
+            const exactPoint2 = (planetLon - aspect.angle + 360) % 360;
+            const distToExact1 = ((exactPoint - moonLon + 360) % 360);
+            const distToExact2 = ((exactPoint2 - moonLon + 360) % 360);
+            const isApplying = (distToExact1 > 0 && distToExact1 < 15) || (distToExact2 > 0 && distToExact2 < 15);
+            
+            return { planet: planet.name, aspect: aspect.name, orb, isApplying };
           }
         }
-        
-        if (hasMajorAspect) break;
       }
-      
-      // If no aspect, check if we should start VOC period
-      if (!hasMajorAspect && lastAspectTime && !vocStart && lastSign === currentSign) {
-        vocStart = datePointer.clone();
-        console.log(`VOC starts: ${vocStart.format('YYYY-MM-DD HH:mm')} in ${currentSign}`);
-      }
-      
-      lastSign = currentSign;
-      datePointer.add(1, 'hour');
+      return null;
     }
     
-    // If period ends with an ongoing VOC period, record it with end at boundary
-    if (vocStart) {
-      vocMoons.push({
-        start: vocStart.format('YYYY-MM-DD HH:mm'),
-        end: endBoundary.format('YYYY-MM-DD HH:mm') + ' (continues)',
-        previousSign: lastSign,
-        duration: endBoundary.diff(vocStart, 'hours', true).toFixed(1) + ' hours (ongoing)'
-      });
+    const vocMoons = [];
+    let datePointer = moment(startBoundary);
+    
+    // FIXED ALGORITHM: Track the LAST aspect before each sign change
+    // VOC only starts after the last applying aspect before leaving the sign
+    
+    let currentSign = null;
+    let lastAspectInSign = null;
+    
+    while (datePointer.isSameOrBefore(endBoundary)) {
+      const jd = getJD(datePointer);
+      const moonPos = getMoonPosition(jd);
+      
+      if (!moonPos) {
+        datePointer.add(30, 'minutes');
+        continue;
+      }
+      
+      // Detect sign change
+      if (currentSign !== null && moonPos.sign !== currentSign) {
+        // Moon just entered new sign - record VOC from last aspect to now
+        if (lastAspectInSign) {
+          const vocDuration = datePointer.diff(lastAspectInSign.time, 'hours', true);
+          if (vocDuration >= 0.25) { // At least 15 minutes
+            vocMoons.push({
+              start: lastAspectInSign.time.format('YYYY-MM-DD HH:mm'),
+              end: datePointer.format('YYYY-MM-DD HH:mm'),
+              previousSign: currentSign,
+              newSign: moonPos.sign,
+              lastAspect: `Moon ${lastAspectInSign.aspect} ${lastAspectInSign.planet}`,
+              duration: vocDuration.toFixed(1) + ' hours'
+            });
+          }
+        }
+        lastAspectInSign = null;
+      }
+      
+      currentSign = moonPos.sign;
+      
+      // Check for aspects
+      const aspectInfo = checkMoonAspects(jd, moonPos.lon);
+      if (aspectInfo) {
+        // Update the last aspect time in this sign
+        lastAspectInSign = {
+          time: datePointer.clone(),
+          ...aspectInfo
+        };
+      }
+      
+      datePointer.add(30, 'minutes');
+    }
+    
+    // Handle ongoing VOC at end of period
+    if (lastAspectInSign && currentSign) {
+      const vocDuration = endBoundary.diff(lastAspectInSign.time, 'hours', true);
+      if (vocDuration >= 0.25) {
+        vocMoons.push({
+          start: lastAspectInSign.time.format('YYYY-MM-DD HH:mm'),
+          end: endBoundary.format('YYYY-MM-DD HH:mm') + ' (continues)',
+          previousSign: currentSign,
+          lastAspect: `Moon ${lastAspectInSign.aspect} ${lastAspectInSign.planet}`,
+          duration: vocDuration.toFixed(1) + ' hours (ongoing)'
+        });
+      }
     }
     
     return res.json({
@@ -2376,7 +2387,7 @@ app.get("/void-of-course-moons", (req, res) => {
   } catch (error) {
     console.error("Error calculating void of course moons:", error.message, error.stack);
     return res.status(500).json({
-      error: "Failed to calculate void of course moons. Please verify the timeframe or date range and try again."
+      error: "Failed to calculate void of course moons."
     });
   }
 });
@@ -3779,16 +3790,18 @@ app.get("/transits/:name/now", (req, res) => {
     const chart = JSON.parse(fs.readFileSync(filepath, 'utf-8'));
     const majorOnly = req.query.major === 'true';
     const orb = parseFloat(req.query.orb) || 8;
-    
-    const localNow = moment.tz("America/New_York");
+
+    const localNow = req.query.date
+      ? moment.tz(req.query.date, "YYYY-MM-DD", "America/New_York").startOf('day').add(12, 'hours')
+      : moment.tz("America/New_York");
     const yearUTC = localNow.utc().year();
     const monthUTC = localNow.utc().month() + 1;
     const dayUTC = localNow.utc().date();
     const hourUTC = localNow.utc().hour() + localNow.utc().minute() / 60;
-    
+
     const jd = sweph.julday(yearUTC, monthUTC, dayUTC, hourUTC, sweph.constants.SE_GREG_CAL);
     const flags = sweph.constants.SEFLG_SWIEPH | sweph.constants.SEFLG_SPEED;
-    
+
     const transitPlanets = [
       { name: "Sun", id: sweph.constants.SE_SUN },
       { name: "Moon", id: sweph.constants.SE_MOON },
