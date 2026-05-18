@@ -4428,14 +4428,12 @@ app.get("/eclipses", (req, res) => {
     const eclipses = [];
 
     // Solar eclipses (sol_eclipse_when_glob)
+    // sweph signature: (tjd_start, ifl, ifltype, backwards: boolean)
     if (type === "all" || type === "solar") {
       let cursor = startJd;
       let guard = 0;
       while (cursor < endJd && guard++ < 200) {
-        let r;
-        try {
-          r = sweph.sol_eclipse_when_glob(cursor, flags, 0, 1);
-        } catch (e) { break; }
+        const r = sweph.sol_eclipse_when_glob(cursor, flags, 0, false);
         if (!r || !r.data || r.flag < 0) break;
         const peakJd = r.data[0];
         if (!peakJd || peakJd > endJd) break;
@@ -4456,14 +4454,12 @@ app.get("/eclipses", (req, res) => {
     }
 
     // Lunar eclipses (lun_eclipse_when)
+    // sweph signature: (tjd_start, ifl, ifltype, backwards: boolean)
     if (type === "all" || type === "lunar") {
       let cursor = startJd;
       let guard = 0;
       while (cursor < endJd && guard++ < 200) {
-        let r;
-        try {
-          r = sweph.lun_eclipse_when(cursor, flags, 1);
-        } catch (e) { break; }
+        const r = sweph.lun_eclipse_when(cursor, flags, 0, false);
         if (!r || !r.data || r.flag < 0) break;
         const peakJd = r.data[0];
         if (!peakJd || peakJd > endJd) break;
