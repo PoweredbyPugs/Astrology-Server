@@ -87,3 +87,8 @@
   EOF
 
 ephemeris/Shared Files.zip
+
+# obsidian-moon: belt-and-suspenders for never committing personal data
+natal_charts/
+.git.backup-pre-filterrepo/
+build.log
