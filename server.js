@@ -1569,6 +1569,37 @@ app.get("/api-info", (req, res) => {
         path: "/important-transits",
         description: "Get significant planetary aspects between outer planets",
         parameters: "?timeframe=day|week|month or ?start=YYYY-MM-DD&end=YYYY-MM-DD"
+      },
+      // Midpoint endpoints
+      {
+        path: "/midpoints",
+        method: "GET",
+        description: "All planet/planet midpoints for the current sky"
+      },
+      {
+        path: "/midpoints/:name",
+        method: "GET",
+        description: "All planet/planet midpoints for a saved natal chart"
+      },
+      {
+        path: "/midpoint-transits/:name",
+        method: "GET",
+        description: "Current transits aspecting natal midpoints (conjunction + opposition)",
+        parameters: "?orb=2 (default 2 degrees)"
+      },
+      // Eclipse endpoint
+      {
+        path: "/eclipses",
+        method: "GET",
+        description: "Solar and lunar eclipses in a date range",
+        parameters: "?start=YYYY-MM-DD&end=YYYY-MM-DD&type=solar|lunar|all (default all)"
+      },
+      // Dasha endpoint
+      {
+        path: "/dashas/:name",
+        method: "GET",
+        description: "Vimshottari mahadasha periods for a saved natal chart, computed from Moon's nakshatra at birth",
+        parameters: "?levels=1|2 (1=mahadasha only, 2=mahadasha + antardasha)"
       }
     ]
   });
@@ -4196,5 +4227,366 @@ app.get("/transits/:name/summary", (req, res) => {
   } catch (error) {
     console.error("Error calculating transit summary:", error);
     res.status(500).json({ error: "Failed to calculate transit summary" });
+  }
+});
+
+// ============================================================================
+// MIDPOINTS, ECLIPSES, DASHAS (added for obsidian-moon plugin v1.2.0)
+// ============================================================================
+
+const _MOON_SIGNS = [
+  "Aries", "Taurus", "Gemini", "Cancer",
+  "Leo", "Virgo", "Libra", "Scorpio",
+  "Sagittarius", "Capricorn", "Aquarius", "Pisces",
+];
+
+const _STANDARD_PLANETS = [
+  { id: sweph.constants.SE_SUN,     name: "Sun" },
+  { id: sweph.constants.SE_MOON,    name: "Moon" },
+  { id: sweph.constants.SE_MERCURY, name: "Mercury" },
+  { id: sweph.constants.SE_VENUS,   name: "Venus" },
+  { id: sweph.constants.SE_MARS,    name: "Mars" },
+  { id: sweph.constants.SE_JUPITER, name: "Jupiter" },
+  { id: sweph.constants.SE_SATURN,  name: "Saturn" },
+  { id: sweph.constants.SE_URANUS,  name: "Uranus" },
+  { id: sweph.constants.SE_NEPTUNE, name: "Neptune" },
+  { id: sweph.constants.SE_PLUTO,   name: "Pluto" },
+];
+
+function _norm360(x) { let a = x % 360; if (a < 0) a += 360; return a; }
+function _signAt(lon) { return _MOON_SIGNS[Math.floor(_norm360(lon) / 30)]; }
+function _degInSign(lon) { return (_norm360(lon) % 30).toFixed(2); }
+
+function _jdNow() {
+  const t = moment.tz("America/New_York");
+  const u = t.utc();
+  return sweph.julday(u.year(), u.month() + 1, u.date(),
+    u.hour() + u.minute() / 60 + u.second() / 3600, sweph.constants.SE_GREG_CAL);
+}
+
+function _jdToMoment(jd) {
+  // Julian day to UTC moment
+  const unixMs = (jd - 2440587.5) * 86400 * 1000;
+  return moment.utc(unixMs).tz("America/New_York");
+}
+
+function _currentPlanetLongitudes() {
+  const jd = _jdNow();
+  return _STANDARD_PLANETS.map(p => {
+    const r = sweph.calc(jd, p.id, sweph.constants.SEFLG_SWIEPH);
+    return { name: p.name, longitude: r.data[0] };
+  });
+}
+
+function _computeAllMidpoints(planets) {
+  // planets: [{name, longitude}]. longitude may be string or number from saved charts.
+  const out = [];
+  const ps = planets.map(p => ({
+    name: p.name,
+    lon: typeof p.longitude === "number" ? p.longitude : parseFloat(p.longitude),
+  })).filter(p => Number.isFinite(p.lon));
+
+  for (let i = 0; i < ps.length; i++) {
+    for (let j = i + 1; j < ps.length; j++) {
+      const p1 = ps[i], p2 = ps[j];
+      // Midpoint along the shorter arc between the two longitudes
+      let diff = (p2.lon - p1.lon + 360) % 360;
+      if (diff > 180) diff -= 360;
+      const mp = _norm360(p1.lon + diff / 2);
+      out.push({
+        pair: `${p1.name}/${p2.name}`,
+        midpoint: parseFloat(mp.toFixed(4)),
+        sign: _signAt(mp),
+        degreeInSign: _degInSign(mp),
+      });
+    }
+  }
+  return out;
+}
+
+function _loadSavedChart(name) {
+  const fs = require("fs");
+  const path = require("path");
+  const filepath = path.join(__dirname, "natal_charts", `${name}.json`);
+  if (!fs.existsSync(filepath)) return null;
+  return JSON.parse(fs.readFileSync(filepath, "utf8"));
+}
+
+// ── /midpoints — current sky midpoints ───────────────────────────────────────
+app.get("/midpoints", (_req, res) => {
+  try {
+    const planets = _currentPlanetLongitudes();
+    res.json({
+      localEasternTime: moment.tz("America/New_York").format(),
+      midpoints: _computeAllMidpoints(planets),
+    });
+  } catch (err) {
+    console.error("Error in /midpoints:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /midpoints/:name — saved-chart midpoints ─────────────────────────────────
+app.get("/midpoints/:name", (req, res) => {
+  try {
+    const chart = _loadSavedChart(req.params.name);
+    if (!chart) return res.status(404).json({ error: `Chart "${req.params.name}" not found` });
+    res.json({
+      name: chart.meta && chart.meta.name,
+      midpoints: _computeAllMidpoints(chart.planets || []),
+    });
+  } catch (err) {
+    console.error("Error in /midpoints/:name:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /midpoint-transits/:name — transits aspecting natal midpoints ────────────
+app.get("/midpoint-transits/:name", (req, res) => {
+  try {
+    const chart = _loadSavedChart(req.params.name);
+    if (!chart) return res.status(404).json({ error: `Chart "${req.params.name}" not found` });
+    const orb = parseFloat(req.query.orb) || 2;
+    const natalMidpoints = _computeAllMidpoints(chart.planets || []);
+    const transitPlanets = _currentPlanetLongitudes();
+
+    const hits = [];
+    for (const tp of transitPlanets) {
+      for (const mp of natalMidpoints) {
+        // Signed angular difference in (-180, 180]
+        let diff = ((tp.longitude - mp.midpoint + 540) % 360) - 180;
+        const conjOrb = Math.abs(diff);
+        const oppOrb = Math.abs(Math.abs(diff) - 180);
+
+        if (conjOrb <= orb) {
+          hits.push({
+            transit: `${tp.name} ${_signAt(tp.longitude)} ${_degInSign(tp.longitude)}°`,
+            midpoint: `${mp.pair} at ${mp.sign} ${mp.degreeInSign}°`,
+            aspect: "conjunction",
+            orb: conjOrb.toFixed(2),
+          });
+        } else if (oppOrb <= orb) {
+          hits.push({
+            transit: `${tp.name} ${_signAt(tp.longitude)} ${_degInSign(tp.longitude)}°`,
+            midpoint: `${mp.pair} at ${mp.sign} ${mp.degreeInSign}°`,
+            aspect: "opposition",
+            orb: oppOrb.toFixed(2),
+          });
+        }
+      }
+    }
+
+    hits.sort((a, b) => parseFloat(a.orb) - parseFloat(b.orb));
+    res.json({
+      name: chart.meta && chart.meta.name,
+      orbLimit: orb,
+      localEasternTime: moment.tz("America/New_York").format(),
+      midpointTransits: hits,
+    });
+  } catch (err) {
+    console.error("Error in /midpoint-transits/:name:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /eclipses?start&end&type ─────────────────────────────────────────────────
+function _decodeEclipseSubtype(flag, kind) {
+  // Standard SE_ECL_* bit flags
+  const C = sweph.constants;
+  if (kind === "solar") {
+    if (flag & (C.SE_ECL_TOTAL || 4))    return "Total Solar";
+    if (flag & (C.SE_ECL_ANNULAR || 8))  return "Annular Solar";
+    if (flag & (C.SE_ECL_PARTIAL || 16)) return "Partial Solar";
+    if (flag & (C.SE_ECL_ANNULAR_TOTAL || 32)) return "Hybrid Solar";
+    return "Solar";
+  } else {
+    if (flag & (C.SE_ECL_TOTAL || 4))     return "Total Lunar";
+    if (flag & (C.SE_ECL_PARTIAL || 16))  return "Partial Lunar";
+    if (flag & (C.SE_ECL_PENUMBRAL || 64)) return "Penumbral Lunar";
+    return "Lunar";
+  }
+}
+
+app.get("/eclipses", (req, res) => {
+  try {
+    const { start, end, type = "all" } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: "start and end query params required (YYYY-MM-DD)" });
+    }
+    const startDate = moment.tz(start, "America/New_York").startOf("day");
+    const endDate = moment.tz(end, "America/New_York").endOf("day");
+    if (!startDate.isValid() || !endDate.isValid()) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+
+    const startJd = sweph.julday(startDate.year(), startDate.month() + 1, startDate.date(),
+      0, sweph.constants.SE_GREG_CAL);
+    const endJd = sweph.julday(endDate.year(), endDate.month() + 1, endDate.date(),
+      24, sweph.constants.SE_GREG_CAL);
+
+    const flags = sweph.constants.SEFLG_SWIEPH;
+    const eclipses = [];
+
+    // Solar eclipses (sol_eclipse_when_glob)
+    if (type === "all" || type === "solar") {
+      let cursor = startJd;
+      let guard = 0;
+      while (cursor < endJd && guard++ < 200) {
+        let r;
+        try {
+          r = sweph.sol_eclipse_when_glob(cursor, flags, 0, 1);
+        } catch (e) { break; }
+        if (!r || !r.data || r.flag < 0) break;
+        const peakJd = r.data[0];
+        if (!peakJd || peakJd > endJd) break;
+        const sunCalc = sweph.calc(peakJd, sweph.constants.SE_SUN, flags);
+        const lon = sunCalc.data[0];
+        const peakMoment = _jdToMoment(peakJd);
+        eclipses.push({
+          category: "solar",
+          type: _decodeEclipseSubtype(r.flag, "solar"),
+          date: peakMoment.format("YYYY-MM-DD"),
+          time: peakMoment.format("HH:mm"),
+          longitude: parseFloat(lon.toFixed(4)),
+          sign: _signAt(lon),
+          degreeInSign: _degInSign(lon),
+        });
+        cursor = peakJd + 1; // jump past this eclipse
+      }
+    }
+
+    // Lunar eclipses (lun_eclipse_when)
+    if (type === "all" || type === "lunar") {
+      let cursor = startJd;
+      let guard = 0;
+      while (cursor < endJd && guard++ < 200) {
+        let r;
+        try {
+          r = sweph.lun_eclipse_when(cursor, flags, 1);
+        } catch (e) { break; }
+        if (!r || !r.data || r.flag < 0) break;
+        const peakJd = r.data[0];
+        if (!peakJd || peakJd > endJd) break;
+        const moonCalc = sweph.calc(peakJd, sweph.constants.SE_MOON, flags);
+        const lon = moonCalc.data[0];
+        const peakMoment = _jdToMoment(peakJd);
+        eclipses.push({
+          category: "lunar",
+          type: _decodeEclipseSubtype(r.flag, "lunar"),
+          date: peakMoment.format("YYYY-MM-DD"),
+          time: peakMoment.format("HH:mm"),
+          longitude: parseFloat(lon.toFixed(4)),
+          sign: _signAt(lon),
+          degreeInSign: _degInSign(lon),
+        });
+        cursor = peakJd + 1;
+      }
+    }
+
+    eclipses.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+    res.json({ start, end, type, eclipses });
+  } catch (err) {
+    console.error("Error in /eclipses:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── /dashas/:name — Vimshottari periods from Moon's nakshatra ────────────────
+const _NAKSHATRA_LORDS = ["Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury"];
+const _DASHA_YEARS = { Ketu:7, Venus:20, Sun:6, Moon:10, Mars:7, Rahu:18, Jupiter:16, Saturn:19, Mercury:17 };
+const _DASHA_TOTAL_YEARS = 120;
+const _NAKSHATRA_SIZE_DEG = 360 / 27;
+
+function _computeVimshottari(birthMoment, moonLon, levels) {
+  const lon = _norm360(moonLon);
+  const nakIdx = Math.floor(lon / _NAKSHATRA_SIZE_DEG);          // 0..26
+  const nakProgress = (lon % _NAKSHATRA_SIZE_DEG) / _NAKSHATRA_SIZE_DEG;
+  const startLord = _NAKSHATRA_LORDS[nakIdx % 9];
+  const startLordIdx = _NAKSHATRA_LORDS.indexOf(startLord);
+  const firstRemainingYrs = _DASHA_YEARS[startLord] * (1 - nakProgress);
+
+  const periods = [];
+  let cursor = birthMoment.clone();
+  // First (partial) mahadasha
+  let endCursor = cursor.clone().add(firstRemainingYrs * 365.25, "days");
+  periods.push({
+    planet: startLord,
+    start: cursor.format("YYYY-MM-DD"),
+    end: endCursor.format("YYYY-MM-DD"),
+    yearsLength: parseFloat(firstRemainingYrs.toFixed(3)),
+  });
+  cursor = endCursor;
+  for (let i = 1; i < 9; i++) {
+    const lord = _NAKSHATRA_LORDS[(startLordIdx + i) % 9];
+    const yrs = _DASHA_YEARS[lord];
+    endCursor = cursor.clone().add(yrs * 365.25, "days");
+    periods.push({
+      planet: lord,
+      start: cursor.format("YYYY-MM-DD"),
+      end: endCursor.format("YYYY-MM-DD"),
+      yearsLength: yrs,
+    });
+    cursor = endCursor;
+  }
+
+  if (levels >= 2) {
+    for (const p of periods) {
+      const mahaStart = moment(p.start);
+      const mahaEnd = moment(p.end);
+      const mahaDays = mahaEnd.diff(mahaStart, "days");
+      const lordIdx = _NAKSHATRA_LORDS.indexOf(p.planet);
+      p.sub = [];
+      let subStart = mahaStart.clone();
+      for (let i = 0; i < 9; i++) {
+        const subLord = _NAKSHATRA_LORDS[(lordIdx + i) % 9];
+        const subDays = mahaDays * (_DASHA_YEARS[subLord] / _DASHA_TOTAL_YEARS);
+        const subEnd = subStart.clone().add(subDays, "days");
+        p.sub.push({
+          planet: subLord,
+          start: subStart.format("YYYY-MM-DD"),
+          end: subEnd.format("YYYY-MM-DD"),
+        });
+        subStart = subEnd;
+      }
+    }
+  }
+
+  return { startNakshatraIndex: nakIdx, startLord, startNakshatraProgress: parseFloat(nakProgress.toFixed(4)), periods };
+}
+
+app.get("/dashas/:name", (req, res) => {
+  try {
+    const chart = _loadSavedChart(req.params.name);
+    if (!chart) return res.status(404).json({ error: `Chart "${req.params.name}" not found` });
+    const moonPlanet = (chart.planets || []).find(p => p.name === "Moon");
+    if (!moonPlanet) return res.status(400).json({ error: "Chart has no Moon position" });
+
+    const moonLon = typeof moonPlanet.longitude === "number"
+      ? moonPlanet.longitude
+      : parseFloat(moonPlanet.longitude);
+    if (!Number.isFinite(moonLon)) {
+      return res.status(400).json({ error: "Moon longitude is not a finite number" });
+    }
+
+    const tz = (chart.birthData && chart.birthData.timezone) || "America/New_York";
+    const birthMoment = moment.tz(
+      `${chart.birthData.date} ${chart.birthData.time}`,
+      tz,
+    );
+    if (!birthMoment.isValid()) return res.status(400).json({ error: "Invalid birth date/time" });
+
+    const levels = Math.max(1, Math.min(2, parseInt(req.query.levels, 10) || 1));
+    const result = _computeVimshottari(birthMoment, moonLon, levels);
+
+    res.json({
+      name: chart.meta && chart.meta.name,
+      birthDate: chart.birthData.date,
+      moonLongitude: parseFloat(moonLon.toFixed(4)),
+      ...result,
+      dashas: result.periods,
+    });
+  } catch (err) {
+    console.error("Error in /dashas/:name:", err);
+    res.status(500).json({ error: err.message });
   }
 });
