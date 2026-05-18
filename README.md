@@ -1,12 +1,12 @@
-# Astrology Server
+# Helios
 
-A Swiss Ephemeris-based astrology REST API providing natal chart calculations, essential dignities, timing techniques, planetary positions, transits, midpoints, eclipses, dashas, and planetary cycle timelines. Used as the backend by the [Obsidian Moon](https://github.com/PoweredbyPugs/moon-phase) plugin and the Stella MCP server.
+A Swiss Ephemeris-based astrology REST API providing natal chart calculations, essential dignities, timing techniques, planetary positions, transits, midpoints, eclipses, dashas, and planetary cycle timelines. Used as the backend by the [Obsidian Moon](https://github.com/PoweredbyPugs/moon-phase) plugin and the [Stella MCP server](https://github.com/PoweredbyPugs/Stella-Astrological-System).
 
 ## Quick start
 
 ```bash
-git clone https://github.com/PoweredbyPugs/Astrology-Server.git
-cd Astrology-Server
+git clone https://github.com/PoweredbyPugs/Helios.git
+cd Helios
 
 # 1. Download Swiss Ephemeris data files (~600MB, covers 1800–2400 CE)
 mkdir -p ephemeris && cd ephemeris
@@ -14,10 +14,12 @@ wget https://www.astro.com/ftp/swisseph/ephe/se12000.zip
 unzip se12000.zip && rm se12000.zip
 cd ..
 
-# 2. Start the server
+# 2. (Optional) Provide a default natal chart for /daily-transits — see "Default natal chart" below
+
+# 3. Start the server
 docker compose up -d --build
 
-# 3. Verify
+# 4. Verify
 curl http://localhost:3000/test
 # {"status":"Server is running correctly"}
 ```
@@ -29,6 +31,27 @@ The server listens on port 3000. Point your client (e.g. Obsidian Moon's Server 
 The Swiss Ephemeris distribution is ~600MB, well over GitHub's 100MB per-file limit. Bundling it in the repo would also bloat clones unnecessarily for anyone who only wants to read the code. The Dockerfile bind-mounts `./ephemeris/` so the files live alongside the repo but aren't tracked.
 
 If you want a narrower year range, browse the alternatives at [astro.com/ftp/swisseph/ephe/](https://www.astro.com/ftp/swisseph/ephe/) — `se06_18.zip` (1800–1899) is smaller, `se1800_2399.zip` covers all 600 years in one bundle, etc.
+
+### Default natal chart
+
+The `/daily-transits` endpoint computes transits against a default natal chart, loaded at startup from `natal_charts/default.json` (gitignored). The expected shape is one entry per planet:
+
+```json
+{
+  "sun":     { "degrees": <0–360>, "sign": "<Aries..Pisces>", "position": "DD°Sg MM'SS''" },
+  "moon":    { ... },
+  "mercury": { ... },
+  "venus":   { ... },
+  "mars":    { ... },
+  "jupiter": { ... },
+  "saturn":  { ... },
+  "uranus":  { ... },
+  "neptune": { ... },
+  "pluto":   { ... }
+}
+```
+
+The fastest way to produce a valid file: POST your birth data to `/generate-chart` with `save: true`, then pluck the `planets` block from the resulting `natal_charts/<name>.json` and rename to `default.json`. Without this file, `/daily-transits` returns an error; all other endpoints work normally.
 
 ## Features
 

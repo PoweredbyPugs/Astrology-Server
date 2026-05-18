@@ -1543,7 +1543,7 @@ app.get("/api-info", (req, res) => {
       },
       {
         path: "/daily-transits",
-        description: "Get current planetary transits to Chris's natal chart"
+        description: "Get current planetary transits to the configured default natal chart"
       },
       {
         path: "/moon-for-date",
@@ -1782,11 +1782,11 @@ app.get("/daily-transits", (req, res) => {
 
     // Check if natal chart exists
     console.log("📋 Checking natal chart...");
-    if (!CHRIS_NATAL_CHART || Object.keys(CHRIS_NATAL_CHART).length === 0) {
+    if (!DEFAULT_NATAL_CHART || Object.keys(DEFAULT_NATAL_CHART).length === 0) {
       console.log("❌ Natal chart is empty or undefined");
       return res.status(500).json({ error: "Natal chart not available" });
     }
-    console.log("✅ Natal chart has", Object.keys(CHRIS_NATAL_CHART).length, "planets");
+    console.log("✅ Natal chart has", Object.keys(DEFAULT_NATAL_CHART).length, "planets");
 
     // Convert to UTC for Swiss Ephemeris calculations
     const yearUTC = easternNow.utc().year();
@@ -1915,7 +1915,7 @@ app.get("/daily-transits", (req, res) => {
     for (const [transitPlanet, transitData] of Object.entries(currentPositions)) {
       if (!transitData) continue;
 
-      for (const [natalPlanet, natalData] of Object.entries(CHRIS_NATAL_CHART)) {
+      for (const [natalPlanet, natalData] of Object.entries(DEFAULT_NATAL_CHART)) {
         transitCount++;
         if (transitCount % 20 === 0) {
           console.log(`🔄 Processed ${transitCount} transit comparisons...`);
@@ -2124,7 +2124,7 @@ app.get("/daily-transits", (req, res) => {
     return res.json({
       date: easternDate,
       localEasternTime: easternNow.format(),
-      natalChart: "Chris",
+      natalChart: "default",
       totalTransits: transits.length,
       exactTransits: transits.filter(t => t.isExact),
       applyingTransits: transits.filter(t => t.isApplying),
@@ -2145,26 +2145,25 @@ app.get("/daily-transits", (req, res) => {
 });
 
 
-// Chris's natal chart data (May 1, 1986 2:35 PM EST = 7:35 PM UTC)
-// Using fallback data since calculateNatalChart function is not implemented
-let CHRIS_NATAL_CHART;
-
-// Fallback static chart data (in case calculation fails)
-const CHRIS_NATAL_CHART_FALLBACK = {
-  sun: { degrees: 41.084, sign: "Taurus", position: "11°Ta05'02''" },
-  moon: { degrees: 319.022, sign: "Aquarius", position: "19°Aq01'18''" },
-  mercury: { degrees: 20.069, sign: "Aries", position: "20°Ar04'10''" },
-  venus: { degrees: 66.059, sign: "Gemini", position: "06°Ge03'31''" },
-  mars: { degrees: 285.372, sign: "Capricorn", position: "15°Cp22'18''" },
-  jupiter: { degrees: 345.495, sign: "Pisces", position: "15°Pi29'43''" },
-  saturn: { degrees: 248.253, sign: "Sagittarius", position: "08°Sg15'08''" },
-  uranus: { degrees: 261.866, sign: "Sagittarius", position: "21°Sg51'58''" },
-  neptune: { degrees: 275.654, sign: "Capricorn", position: "05°Cp39'16''" },
-  pluto: { degrees: 215.825, sign: "Scorpio", position: "05°Sc49'30''" }
-};
-
-// Use fallback natal chart data
-CHRIS_NATAL_CHART = CHRIS_NATAL_CHART_FALLBACK;
+// Default natal chart used by /daily-transits when no chart is specified.
+// Loaded from natal_charts/default.json at startup. The file is gitignored —
+// each deployment provides its own. See README for the expected shape.
+let DEFAULT_NATAL_CHART = {};
+{
+  const fs = require('fs');
+  const path = require('path');
+  const defaultChartPath = path.join(__dirname, 'natal_charts', 'default.json');
+  try {
+    if (fs.existsSync(defaultChartPath)) {
+      DEFAULT_NATAL_CHART = JSON.parse(fs.readFileSync(defaultChartPath, 'utf8'));
+      console.log(`✅ Loaded default natal chart from ${defaultChartPath}`);
+    } else {
+      console.log(`ℹ️  No default natal chart at ${defaultChartPath}; /daily-transits will return an error until one is provided.`);
+    }
+  } catch (err) {
+    console.error(`⚠️  Failed to load default natal chart: ${err.message}`);
+  }
+}
 
 // Planetary glyphs
 const PLANET_GLYPHS = {
