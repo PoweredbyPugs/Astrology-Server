@@ -1600,6 +1600,13 @@ app.get("/api-info", (req, res) => {
         method: "GET",
         description: "Vimshottari mahadasha periods for a saved natal chart, computed from Moon's nakshatra at birth",
         parameters: "?levels=1|2 (1=mahadasha only, 2=mahadasha + antardasha)"
+      },
+      // Planetary cycle timeline
+      {
+        path: "/cycle/:planet",
+        method: "GET",
+        description: "Timeline of a planet's longitude across a date range, with optional aspect-crossing events against one or more saved natal charts. Designed for research, periodic-ritual roll-ups, and animated chart views.",
+        parameters: "?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=hourly|6h|daily|weekly &natalChart=name (repeatable) &natalPoints=Sun,Mars,Ascendant &aspects=conjunction,opposition,square,trine,sextile &orb=1"
       }
     ]
   });
@@ -4583,6 +4590,288 @@ app.get("/dashas/:name", (req, res) => {
     });
   } catch (err) {
     console.error("Error in /dashas/:name:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// /cycle/:planet — planet timeline + optional natal-chart aspect crossings
+// ============================================================================
+//
+// GET /cycle/:planet?start=YYYY-MM-DD&end=YYYY-MM-DD&interval=daily
+//   &natalChart=name1&natalChart=name2          (repeatable; charts in `natal_charts/`)
+//   &natalPoints=Sun,Mars,Ascendant,Midheaven   (comma-separated; default = all planets+angles)
+//   &aspects=conjunction,opposition,square,trine,sextile  (default = major five)
+//   &orb=1                                       (degrees; default = 1)
+//
+// Response:
+// {
+//   planet, start, end, interval, cyclePeriodDays,
+//   timeline: [{date, jd, longitude, sign, degreeInSign, isRetrograde}, ...],
+//   natalEvents: [{chart, transitDate, transitLongitude, natalPoint, natalLongitude,
+//                  aspect, orb, isApplying}, ...]
+// }
+
+const _CYCLE_PLANET_IDS = {
+  sun: sweph.constants.SE_SUN,
+  moon: sweph.constants.SE_MOON,
+  mercury: sweph.constants.SE_MERCURY,
+  venus: sweph.constants.SE_VENUS,
+  mars: sweph.constants.SE_MARS,
+  jupiter: sweph.constants.SE_JUPITER,
+  saturn: sweph.constants.SE_SATURN,
+  uranus: sweph.constants.SE_URANUS,
+  neptune: sweph.constants.SE_NEPTUNE,
+  pluto: sweph.constants.SE_PLUTO,
+};
+
+// Approximate tropical periods (days) — for `cyclePeriodDays` informational field.
+const _CYCLE_PERIODS_DAYS = {
+  sun: 365.25, moon: 27.32, mercury: 87.97, venus: 224.70, mars: 686.97,
+  jupiter: 4332.59, saturn: 10759.22, uranus: 30688.50, neptune: 60182.00, pluto: 90560.00,
+};
+
+const _CYCLE_INTERVAL_HOURS = { hourly: 1, "6h": 6, daily: 24, weekly: 168 };
+
+const _ASPECT_ANGLES = {
+  conjunction: 0,
+  semisextile: 30,
+  "semi-sextile": 30,
+  semisquare: 45,
+  "semi-square": 45,
+  sextile: 60,
+  quintile: 72,
+  square: 90,
+  trine: 120,
+  sesquiquadrate: 135,
+  quincunx: 150,
+  opposition: 180,
+};
+
+// Default natal points: planets + Ascendant + Midheaven
+const _DEFAULT_NATAL_POINTS = new Set([
+  "Sun", "Moon", "Mercury", "Venus", "Mars",
+  "Jupiter", "Saturn", "Uranus", "Neptune", "Pluto",
+  "North Node", "South Node", "Chiron",
+  "Ascendant", "Midheaven",
+]);
+
+function _natalPointsFromChart(chart) {
+  // Returns [{label, longitude}] for all points the user might aspect: planets + angles.
+  const out = [];
+  for (const p of chart.planets || []) {
+    const lon = typeof p.longitude === "number" ? p.longitude : parseFloat(p.longitude);
+    if (Number.isFinite(lon)) out.push({ label: p.name, longitude: _norm360(lon) });
+  }
+  // Angles (Ascendant, Midheaven, Descendant, IC) from chart.angles
+  const angles = chart.angles || {};
+  const labelMap = {
+    ascendant: "Ascendant", midheaven: "Midheaven",
+    descendant: "Descendant", imumCoeli: "Imum Coeli",
+  };
+  for (const [k, label] of Object.entries(labelMap)) {
+    const a = angles[k];
+    if (!a) continue;
+    const lon = typeof a.longitude === "number" ? a.longitude : parseFloat(a.longitude);
+    if (Number.isFinite(lon)) out.push({ label, longitude: _norm360(lon) });
+  }
+  return out;
+}
+
+function _signedAngularDiff(a, b) {
+  // Returns a signed difference in (-180, 180]: how far `a` is past `b`
+  let d = ((a - b + 540) % 360) - 180;
+  return d;
+}
+
+// Detect aspect-crossings: scan a sliding window of (prev, current) longitudes.
+// If the orb (distance from exact aspect angle) crossed zero between prev and current,
+// or shrank to within `orb` degrees at current, record an event.
+function _detectAspectCrossings(timeline, natalChart, natalPoints, aspectAngles, orb) {
+  const events = [];
+  const pts = _natalPointsFromChart(natalChart)
+    .filter(p => natalPoints.size === 0 || natalPoints.has(p.label));
+
+  for (let i = 1; i < timeline.length; i++) {
+    const prev = timeline[i - 1];
+    const cur = timeline[i];
+
+    for (const np of pts) {
+      // For each aspect angle, check if the *signed offset from exact* crossed zero
+      // between prev and current. Use the shortest-arc signed difference.
+      for (const asp of aspectAngles) {
+        const aspectName = asp.name;
+        const aspectDeg = asp.degrees;
+
+        // The "target" longitude(s) for this aspect to this natal point
+        // are np.longitude + aspectDeg AND np.longitude - aspectDeg (mod 360).
+        const targets = aspectDeg === 0 || aspectDeg === 180
+          ? [_norm360(np.longitude + aspectDeg)]
+          : [_norm360(np.longitude + aspectDeg), _norm360(np.longitude - aspectDeg)];
+
+        for (const target of targets) {
+          const prevDiff = _signedAngularDiff(prev.longitude, target);
+          const curDiff  = _signedAngularDiff(cur.longitude,  target);
+
+          // Crossing if sign changed AND we didn't wrap halfway around the zodiac.
+          const crossed = prevDiff * curDiff < 0 && Math.abs(prevDiff - curDiff) < 60;
+          const within = Math.abs(curDiff) <= orb;
+
+          if (crossed || within) {
+            // Linearly interpolate the date of exact crossing
+            const fraction = crossed
+              ? Math.abs(prevDiff) / (Math.abs(prevDiff) + Math.abs(curDiff))
+              : 0;
+            const interpDate = crossed
+              ? moment(prev.date).add(
+                  moment(cur.date).diff(moment(prev.date)) * fraction, "ms",
+                )
+              : moment(cur.date);
+            events.push({
+              chart: natalChart.meta && natalChart.meta.name,
+              transitDate: interpDate.format("YYYY-MM-DD HH:mm"),
+              transitLongitude: parseFloat(
+                ((1 - fraction) * prev.longitude + fraction * cur.longitude).toFixed(4),
+              ),
+              natalPoint: np.label,
+              natalLongitude: parseFloat(np.longitude.toFixed(4)),
+              aspect: aspectName,
+              orb: parseFloat(Math.abs(curDiff).toFixed(3)),
+              isExact: crossed,
+              isApplying: prevDiff * curDiff < 0 ? false : Math.abs(curDiff) < Math.abs(prevDiff),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Deduplicate: same chart + natalPoint + aspect within 36 hours = same event.
+  events.sort((a, b) => a.transitDate.localeCompare(b.transitDate));
+  const deduped = [];
+  for (const e of events) {
+    const last = deduped[deduped.length - 1];
+    if (last && last.chart === e.chart && last.natalPoint === e.natalPoint
+        && last.aspect === e.aspect
+        && Math.abs(moment(e.transitDate).diff(moment(last.transitDate), "hours")) < 36) {
+      // Keep the tighter-orb one
+      if (e.orb < last.orb) deduped[deduped.length - 1] = e;
+    } else {
+      deduped.push(e);
+    }
+  }
+  return deduped;
+}
+
+function _asArray(value) {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+app.get("/cycle/:planet", (req, res) => {
+  try {
+    const planetKey = String(req.params.planet || "").toLowerCase();
+    const planetId = _CYCLE_PLANET_IDS[planetKey];
+    if (planetId === undefined) {
+      return res.status(400).json({
+        error: `Unknown planet "${req.params.planet}". Use one of: ${Object.keys(_CYCLE_PLANET_IDS).join(", ")}`,
+      });
+    }
+
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: "start and end query params required (YYYY-MM-DD)" });
+    }
+    const startMoment = moment.tz(start, "America/New_York").startOf("day");
+    const endMoment = moment.tz(end, "America/New_York").endOf("day");
+    if (!startMoment.isValid() || !endMoment.isValid() || !endMoment.isAfter(startMoment)) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
+
+    const intervalKey = String(req.query.interval || "daily").toLowerCase();
+    const intervalHours = _CYCLE_INTERVAL_HOURS[intervalKey];
+    if (!intervalHours) {
+      return res.status(400).json({
+        error: `Invalid interval "${intervalKey}". Use one of: ${Object.keys(_CYCLE_INTERVAL_HOURS).join(", ")}`,
+      });
+    }
+
+    // Cap timeline size so a foot-gun query (e.g. hourly across 50 years) doesn't OOM.
+    const totalHours = endMoment.diff(startMoment, "hours");
+    const points = Math.floor(totalHours / intervalHours) + 1;
+    if (points > 50000) {
+      return res.status(400).json({
+        error: `Too many points (${points}). Try a coarser interval or shorter range.`,
+      });
+    }
+
+    // Build the timeline
+    const flags = sweph.constants.SEFLG_SWIEPH | sweph.constants.SEFLG_SPEED;
+    const planetName = planetKey.charAt(0).toUpperCase() + planetKey.slice(1);
+    const timeline = [];
+    let cursor = startMoment.clone();
+    while (cursor.isSameOrBefore(endMoment)) {
+      const u = cursor.clone().utc();
+      const jd = sweph.julday(
+        u.year(), u.month() + 1, u.date(),
+        u.hour() + u.minute() / 60 + u.second() / 3600,
+        sweph.constants.SE_GREG_CAL,
+      );
+      const r = sweph.calc(jd, planetId, flags);
+      if (r && r.data) {
+        const lon = _norm360(r.data[0]);
+        const speed = r.data[3];
+        timeline.push({
+          date: cursor.format(intervalHours < 24 ? "YYYY-MM-DD HH:mm" : "YYYY-MM-DD"),
+          jd: parseFloat(jd.toFixed(5)),
+          longitude: parseFloat(lon.toFixed(4)),
+          sign: _signAt(lon),
+          degreeInSign: _degInSign(lon),
+          isRetrograde: planetId !== sweph.constants.SE_SUN
+                        && planetId !== sweph.constants.SE_MOON
+                        && speed < 0,
+        });
+      }
+      cursor.add(intervalHours, "hours");
+    }
+
+    // Optional natal-chart crossings
+    const chartNames = _asArray(req.query.natalChart);
+    const natalPointFilter = req.query.natalPoints
+      ? new Set(String(req.query.natalPoints).split(",").map(s => s.trim()))
+      : new Set();
+    const orb = parseFloat(req.query.orb) || 1;
+
+    const aspectList = req.query.aspects
+      ? String(req.query.aspects).split(",").map(s => s.trim().toLowerCase())
+      : ["conjunction", "opposition", "trine", "square", "sextile"];
+    const aspectAngles = aspectList
+      .map(name => ({ name, degrees: _ASPECT_ANGLES[name] }))
+      .filter(a => Number.isFinite(a.degrees));
+
+    const natalEvents = [];
+    for (const chartName of chartNames) {
+      const chart = _loadSavedChart(chartName);
+      if (!chart) continue;
+      natalEvents.push(..._detectAspectCrossings(timeline, chart, natalPointFilter, aspectAngles, orb));
+    }
+    natalEvents.sort((a, b) => a.transitDate.localeCompare(b.transitDate));
+
+    res.json({
+      planet: planetName,
+      start: startMoment.format("YYYY-MM-DD"),
+      end: endMoment.format("YYYY-MM-DD"),
+      interval: intervalKey,
+      intervalHours,
+      cyclePeriodDays: _CYCLE_PERIODS_DAYS[planetKey],
+      pointCount: timeline.length,
+      timeline,
+      natalCharts: chartNames,
+      natalEventCount: natalEvents.length,
+      natalEvents,
+    });
+  } catch (err) {
+    console.error("Error in /cycle/:planet:", err);
     res.status(500).json({ error: err.message });
   }
 });
