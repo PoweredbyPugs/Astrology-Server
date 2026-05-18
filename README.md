@@ -1,12 +1,12 @@
-# Helios
+# Astrology Server
 
 A Swiss Ephemeris-based astrology REST API providing natal chart calculations, essential dignities, timing techniques, planetary positions, transits, midpoints, eclipses, dashas, and planetary cycle timelines. Used as the backend by the [Obsidian Moon](https://github.com/PoweredbyPugs/moon-phase) plugin and the [Stella MCP server](https://github.com/PoweredbyPugs/Stella-Astrological-System).
 
 ## Quick start
 
 ```bash
-git clone https://github.com/PoweredbyPugs/Helios.git
-cd Helios
+git clone https://github.com/PoweredbyPugs/Astrology-Server.git
+cd Astrology-Server
 
 # 1. Download Swiss Ephemeris data files (~600MB, covers 1800–2400 CE)
 mkdir -p ephemeris && cd ephemeris
