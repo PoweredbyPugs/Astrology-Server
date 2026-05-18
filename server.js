@@ -1285,6 +1285,156 @@ function isRetrograde(planetId, julianDay, flags) {
 }
 
 // Add a simple test endpoint to verify server is running
+
+// GET /sun-degree?degree=15&sign=Aries
+app.get("/sun-degree", (req, res) => {
+  try {
+    const { degree, sign } = req.query;
+    if (!degree || !sign) {
+      return res.status(400).json({ error: "degree and sign params required" });
+    }
+
+    const signNames = [
+      "Aries", "Taurus", "Gemini", "Cancer",
+      "Leo", "Virgo", "Libra", "Scorpio",
+      "Sagittarius", "Capricorn", "Aquarius", "Pisces"
+    ];
+    const signIndex = signNames.indexOf(sign);
+    if (signIndex === -1) return res.status(400).json({ error: "Invalid sign" });
+
+    const targetLon = signIndex * 30 + parseFloat(degree);
+    const now = moment.tz("America/New_York");
+
+    // Daily scan ±90 days to find crossing
+    let crossLo = null, crossHi = null, prevLon = null;
+    for (let i = -90; i <= 90; i++) {
+      const d = moment(now).add(i, "days");
+      const jd = sweph.julday(d.utc().year(), d.utc().month() + 1, d.utc().date(),
+        d.utc().hour() + d.utc().minute() / 60, sweph.constants.SE_GREG_CAL);
+      const lon = sweph.calc(jd, sweph.constants.SE_SUN, sweph.constants.SEFLG_SWIEPH).data[0];
+
+      if (prevLon !== null) {
+        const crossed = targetLon < 30
+          ? (prevLon > 300 && lon < 60 && lon >= targetLon)
+          : (prevLon < targetLon && lon >= targetLon);
+        if (crossed) {
+          crossLo = moment(now).add(i - 1, "days");
+          crossHi = d;
+          break;
+        }
+      }
+      prevLon = lon;
+    }
+
+    if (!crossLo) return res.status(404).json({ error: "Not found" });
+
+    // Binary search to minute precision
+    for (let i = 0; i < 20; i++) {
+      const mid = moment(crossLo).add(crossHi.diff(crossLo) / 2, "ms");
+      const jd = sweph.julday(mid.utc().year(), mid.utc().month() + 1, mid.utc().date(),
+        mid.utc().hour() + mid.utc().minute() / 60 + mid.utc().second() / 3600, sweph.constants.SE_GREG_CAL);
+      const lon = sweph.calc(jd, sweph.constants.SE_SUN, sweph.constants.SEFLG_SWIEPH).data[0];
+
+      const past = targetLon < 30 ? (lon >= targetLon && lon < 60) : (lon >= targetLon);
+      if (past) { crossHi = mid; } else { crossLo = mid; }
+    }
+
+    const exact = moment(crossHi).tz("America/New_York");
+    res.json({ date: exact.format("YYYY-MM-DD"), time: exact.format("HH:mm"), degree: parseFloat(degree), sign });
+  } catch (err) {
+    console.error("Error in /sun-degree:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// Find exact major moon phase dates for a date range
+// GET /moon-phases?start=YYYY-MM-DD&end=YYYY-MM-DD
+app.get("/moon-phases", (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) {
+      return res.status(400).json({ error: "start and end query params required (YYYY-MM-DD)" });
+    }
+
+    const startDate = moment.tz(start, "America/New_York").startOf("day");
+    const endDate = moment.tz(end, "America/New_York").endOf("day");
+
+    if (!startDate.isValid() || !endDate.isValid()) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+
+    const phases = [];
+    let prev = null;
+    const scanStep = 6;
+
+    const targetAngles = [
+      { phase: "New Moon", angle: 0 },
+      { phase: "First Quarter", angle: 90 },
+      { phase: "Full Moon", angle: 180 },
+      { phase: "Last Quarter", angle: 270 },
+    ];
+
+    for (let d = moment(startDate).subtract(1, "day"); d.isSameOrBefore(endDate); d.add(scanStep, "hours")) {
+      const info = getMoonPhaseForDate(d);
+      const angle = parseFloat(info.phaseAngle);
+
+      if (prev !== null) {
+        for (const target of targetAngles) {
+          let crossed = false;
+          if (target.angle === 0) {
+            crossed = (prev.angle > 300 && angle < 60);
+          } else {
+            crossed = (prev.angle < target.angle && angle >= target.angle);
+          }
+
+          if (crossed) {
+            let lo = moment(prev.time);
+            let hi = moment(d);
+            for (let i = 0; i < 12; i++) {
+              const mid = moment(lo).add(hi.diff(lo) / 2, "ms");
+              const midInfo = getMoonPhaseForDate(mid);
+              const midAngle = parseFloat(midInfo.phaseAngle);
+
+              let pastTarget;
+              if (target.angle === 0) {
+                pastTarget = midAngle < 60;
+              } else {
+                pastTarget = midAngle >= target.angle;
+              }
+
+              if (pastTarget) { hi = mid; } else { lo = mid; }
+            }
+
+            const exactTime = moment(hi).tz("America/New_York");
+            const exactInfo = getMoonPhaseForDate(exactTime);
+
+            if (exactTime.isSameOrAfter(startDate) && exactTime.isSameOrBefore(endDate)) {
+              phases.push({
+                phase: target.phase,
+                date: exactTime.format("YYYY-MM-DD"),
+                time: exactTime.format("HH:mm"),
+                moonSign: exactInfo.moonSign,
+                degreeInSign: exactInfo.degreeInSign,
+              });
+            }
+          }
+        }
+      }
+
+      prev = { angle, time: moment(d) };
+    }
+
+    phases.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    const unique = phases.filter((p, i) => i === 0 || p.date !== phases[i - 1].date || p.phase !== phases[i - 1].phase);
+
+    res.json({ phases: unique });
+  } catch (err) {
+    console.error("Error in /moon-phases:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/test", (req, res) => {
   res.json({ status: "Server is running correctly" });
 });
